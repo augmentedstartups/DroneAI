@@ -1,4 +1,4 @@
-#Working Augmented Startups v2_ From Simulators
+#Working Augmented Startups v1.3 Takeoff and Landing
 from __future__ import division
 import time
 import os
@@ -9,7 +9,6 @@ import sys
 import json
 import socketserver
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from io import BytesIO
 from pathlib import Path
 from socketserver import ThreadingMixIn
@@ -32,6 +31,7 @@ from pymavlink import mavutil
 
 #########################################
 
+########################################
 
 
 
@@ -40,7 +40,7 @@ targetAltitude=0
 if len(sys.argv)>1:
     targetAltitude=float(sys.argv[1])
 else:
-    targetAltitude=1.5
+    targetAltitude=1.1
 
 ############DRONEKIT#################
 vehicle = connect('/dev/ttyAMA0',wait_ready=True,baud=57600)
@@ -88,7 +88,7 @@ def arm_and_takeoff(targetHeight):
         time.sleep(1)
         print("Vehicle now in GUIDED MODE. Have fun!!")
 
-        if manualArm==False:
+        if manualArm==False: 
             vehicle.armed = True
             while vehicle.armed==False:
                 print("Waiting for vehicle to become armed.")
@@ -103,7 +103,7 @@ def arm_and_takeoff(targetHeight):
     vehicle.simple_takeoff(targetHeight) ##meters
 
     while True:
-        print("Current Altitude: %d"%vehicle.location.global_relative_frame.alt)
+        print("Current Altitude: %d"% " {:.2f}".format(vehicle.location.global_relative_frame.alt))
         if vehicle.location.global_relative_frame.alt>=.95*targetHeight:
             break
         time.sleep(1)
@@ -177,12 +177,15 @@ def condition_yaw(heading, relative=False):
     
 def OAKDetection():
     ### OAK Initialize variables############
-    det_classes = ["A", "B", "C", "D", "E",
-                "E", "F", "G", "H", "I", "J", "K",
-                "L", "M", "N", "O", "P", "Q", "R", "S",
-                "T", "U", "V", "W", "X", "Y", "Z", "backpack",
-                "umbrella", "unknown", "unknown" ] 
-
+    det_classes = ["Follow", "Follow", "TakeOff_hand", "Land", "Follow_Hand",
+                    "Null", "TakeOff", "Land2","blank", "blank", "blank", "blank",
+                    "blank", "blank", "blank" ] 
+    TO_Count = 0
+    LD_Count = 0
+    TakeOff_Flag = 0
+    Landing_Flag = 0
+    Threshold_Trigger = 10
+    Altitude = 0
 
     device = depthai.Device('', False)
     #nn2depth = device.get_nn_to_depth_bbox_mapping()
@@ -200,6 +203,8 @@ def OAKDetection():
 
     detections = []
     print(det_classes)
+    #arm_and_takeoff(targetAltitude)
+
     while True:
         nnet_packets, data_packets = pipeline.get_available_nnet_and_data_packets()
         
@@ -228,6 +233,40 @@ def OAKDetection():
                         print(label)
                         cv2.putText(frame, label, (left, top - 11), cv2.FONT_HERSHEY_TRIPLEX, 0.5, (0, 0, 255))
                         cv2.rectangle(frame, (left, top), (right, bottom), (0, 255,0), 5)
+                        
+                        
+
+                        ## TakeOff Sequence
+                        #if (vehicle.location.global_relative_frame.alt <= 0):
+                            #print (Altitude, "Altitude _EnTER_takeoff")
+                        if (label == "TakeOff"):
+                            #print("ENTERED TAKEOFF ZONE")
+                            TO_Count += 1
+                            if (TO_Count >=20 ):
+                                TO_Count = 0
+                                print (1, "ENTERED TAKEOFF ZONE")
+                                
+                                print("LIFT OFF")
+                                arm_and_takeoff(targetAltitude)
+                                #break
+                                
+                             
+                                    
+                        
+                        ## Landing Sequence
+#                         if (vehicle.location.global_relative_frame.alt >= 0.2):
+#                             #print (Altitude, "AltitudeENTERLANDING")
+#                             if (label == "Land"):
+#                                 LD_Count = LD_Count + 1
+#                                 if (LD_Count >=Threshold_Trigger ):
+#                                     LD_Count = 0
+#                                     Land_Flag = 1
+#                                     print (Land_Flag, "Land_Flag")
+#                                     break
+                        
+                        
+                        
+                        
 
                 cv2.imshow('previewout', frame)
 
@@ -244,10 +283,12 @@ if __name__=='__main__':
     try:
         
         
-        arm_and_takeoff(targetAltitude)
-
-        time.sleep(1)
+        #
         OAKDetection()
+        time.sleep(1)
+        print("LIFT OFF")
+        arm_and_takeoff(targetAltitude)
+        
 #         send_local_ned_velocity(0,1,0)
 #         print("Positive Velocity Commands")
 #         time.sleep(1)
@@ -273,7 +314,7 @@ if __name__=='__main__':
 #         time.sleep(2)
 #         print("Non Relative YAW is TRUE 180 3")
 #         condition_yaw(0,0)
-        time.sleep(4)
+        time.sleep(1)
 
         print("Preparing for landing")
         time.sleep(2)
