@@ -13,28 +13,21 @@ from io import BytesIO
 from pathlib import Path
 from socketserver import ThreadingMixIn
 from time import sleep
+#CREATED BY AUGMENTED STARTUPS
+#MAY 20201
+
+#IMPORTS#####################
 import depthai
 import cv2
 import numpy as np
 from PIL import Image
-
-
 import time
-###
 
 from dronekit import connect, VehicleMode,LocationGlobal,LocationGlobalRelative
 from pymavlink import mavutil
 #############################
 
-
-
-
-#########################################
-
-########################################
-
-
-
+#1.0#DRONE#INITIAL#PARAMETERES#######
 manualArm=False ##If True, arming from RC controller, If False, arming from this script.
 targetAltitude=0
 if len(sys.argv)>1:
@@ -42,9 +35,8 @@ if len(sys.argv)>1:
 else:
     targetAltitude=2
 
-############DRONEKIT#################
+#1.1#DRONEKIT#READOUT################
 vehicle = connect('/dev/ttyAMA0',wait_ready=True,baud=57600)
-# vehicle is an instance of the Vehicle class
 print("Autopilot Firmware version: %s" %vehicle.version)
 print("Autopilot capabilities (supports ftp): %s" %vehicle.capabilities.ftp)
 print("Global Location: %s" %vehicle.location.global_frame)
@@ -74,7 +66,18 @@ vehicle.parameters['PLND_TYPE']=1
 vehicle.parameters['PLND_EST_TYPE']=0
 vehicle.parameters['LAND_SPEED']=30
 
-#########FUNCTIONS###########
+#1.2##YAW#FOLLOWING#PARAMETERS################
+posX = 300
+posY = 150
+speedX = 1
+speedY = 2
+ThresholdX = 20
+ThresholdY = 10
+
+
+#2.#FUNCTIONS#######################
+
+#2.1#ARM#AND#TAKEOFF#######################
 def arm_and_takeoff(targetHeight):
     while vehicle.is_armable!=True:
         print("Waiting for vehicle to become armable.")
@@ -111,7 +114,7 @@ def arm_and_takeoff(targetHeight):
 
     return None
 
-##Send velocity command to drone
+#2.2#Send velocity command to drone####3
 def send_local_ned_velocity(vx,vy,vz):
     msg = vehicle.message_factory.set_position_target_local_ned_encode(
         0,
@@ -177,15 +180,24 @@ def condition_yaw(heading, relative=False):
     
 def OAKDetection():
     ### OAK Initialize variables############
-    det_classes = ["Follow", "Follow", "TakeOff_hand", "Land", "Follow_Hand",
-                    "Null", "TakeOff", "Land2","blank", "blank", "blank", "blank",
-                    "blank", "blank", "blank" ] 
+    det_classes = ["Follow", "Follow", "Follow", "Land", "Follow",
+                    "Null", "TakeOff", "TakeOff","blank", "blank", "blank", "blank",
+                    "blank", "blank", "blank" ]
+    
+    ####TAKEOFF#&#LAND#Parameters######
     TO_Count = 0
     LD_Count = 0
     Flag = 0
     Landing_Flag = 0
     Threshold_Trigger = 20
     Altitude = 0
+    
+    ####YAW#Parameters######
+    posX = 300
+    speedX = 1
+    ThresholdX = 75
+    Red_FLAG = 0
+    #########################
 
     device = depthai.Device('', False)
     #nn2depth = device.get_nn_to_depth_bbox_mapping()
@@ -193,7 +205,7 @@ def OAKDetection():
     pipeline = device.create_pipeline(config={
         "streams": ["metaout", "previewout"],
         "ai": {
-            "blob_file": str(Path('./mobilenet-ssd/model.blob').resolve().absolute()),
+            "blob_file": str(Path('./mobilenet-ssd/modelv4.blob').resolve().absolute()),
             "blob_file_config": str(Path('./mobilenet-ssd/config.json').resolve().absolute())
         }
     })
@@ -234,34 +246,65 @@ def OAKDetection():
                         cv2.putText(frame, label, (left, top - 11), cv2.FONT_HERSHEY_TRIPLEX, 0.5, (0, 0, 255))
                         cv2.rectangle(frame, (left, top), (right, bottom), (0, 255,0), 5)
                         
-                                ## TakeOff Sequence
-                        #if (vehicle.location.global_relative_frame.alt <= 0):
-                            #print (Altitude, "Altitude _EnTER_takeoff")
-                        if (label == "TakeOff"):
-                            #print("ENTERED TAKEOFF ZONE")
-                            TO_Count += 1
-                            if (TO_Count >=Threshold_Trigger ):
-                                TO_Count = 0
-                                print (1, "ENTERED TAKEOFF ZONE")
-                                #arm_and_takeoff(targetAltitude)
-                                Flag = 1
-                                
-                                                        
+                        ##### Finding BBOX center ####
+                        cx = int(left + (right-left)/2)
+                        cy = int(top + (bottom-top)/2)
+                        # Draw Line
+                        ImageCenterX, ImageCenterY = int(img_w/2), int(img_h/2) #Center coordinates
+                        line_thickness = 2
+                        
+                        if (Red_FLAG == 0):
+                            cv2.line(frame, (ImageCenterX,ImageCenterY ), (cx, cy), (0, 255, 0), thickness=line_thickness)
+                        elif (Red_FLAG == 1):   
+                            cv2.line(frame, (ImageCenterX,ImageCenterY ), (cx, cy), (0, 0, 255), thickness=line_thickness) 
+                        
+                        
 
                         
-                                    
+                        ###TakeOff#Sequence#########
+                        #if (vehicle.location.global_relative_frame.alt <= 0):
+                        print (vehicle.location.global_relative_frame.alt, "Altitude")
+                        if (vehicle.location.global_relative_frame.alt <= 0.4):
+                            if (label == "TakeOff"):
+                                #print("ENTERED TAKEOFF ZONE")
+                                TO_Count += 1
+                                if (TO_Count >=Threshold_Trigger ):
+                                    TO_Count = 0
+                                    print (1, "ENTERED TAKEOFF ZONE")
+                                    #arm_and_takeoff(targetAltitude)
+                                    Flag = 1                
                         
                         ## Landing Sequence
-#                         if (vehicle.location.global_relative_frame.alt >= 0.2):
-#                             #print (Altitude, "AltitudeENTERLANDING")
-#                             if (label == "Land"):
-#                                 LD_Count = LD_Count + 1
-#                                 if (LD_Count >=Threshold_Trigger ):
-#                                     LD_Count = 0
-#                                     Land_Flag = 1
-#                                     print (Land_Flag, "Land_Flag")
-#                                     break
-                        
+                        elif (vehicle.location.global_relative_frame.alt >= 0.5):
+                            #print (Altitude, "AltitudeENTERLANDING")
+                            if (label == "Land"):
+                                LD_Count += 1
+                                if (LD_Count >=(Threshold_Trigger-10) ):
+                                    LD_Count = 0
+                                    print ("LANDING AT THE LZ")
+                                    Flag = 1
+                                    
+                                            
+                           ############YAW#Rotation#Follow####################
+
+                            elif (label == "Follow"):
+                                print("FOLLOW Sequence entered")
+                                
+                                ###Threshold#Indication#######
+                                if abs(cx-ImageCenterX)>ThresholdX: 
+                                    Red_FLAG = 1
+                                else:
+                                    Red_FLAG = 0
+                                    
+                                ###Horizontal#YAW#Shift#######
+                                if cx>ImageCenterX +ThresholdX: # RIGHT
+                                    print("Right")
+                                    
+                                elif cx<ImageCenterX-ThresholdX: # LEFT
+                                    print("Left")
+                                                                 
+#                                     
+                                                       
                         
                         
                         
