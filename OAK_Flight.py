@@ -1,11 +1,15 @@
-#Working Augmented Startups v1.3 Takeoff and Landing
+#CREATED BY AUGMENTED STARTUPS
+#MAY 2021
+#Takeoff and Landing and Yaw following
+
+#0.0###IMPORTS########################
 from __future__ import division
 import time
 import os
 import platform
 import sys
 
-###OAK##
+#0.1###OAK#######
 import json
 import socketserver
 import threading
@@ -13,19 +17,21 @@ from io import BytesIO
 from pathlib import Path
 from socketserver import ThreadingMixIn
 from time import sleep
-#CREATED BY AUGMENTED STARTUPS
-#MAY 20201
 
-#IMPORTS#####################
 import depthai
 import cv2
 import numpy as np
 from PIL import Image
 import time
 
+from Detector import detect
+from KalmanFilter import KalmanFilter
+
+#0.2###DRONE#KIT##
 from dronekit import connect, VehicleMode,LocationGlobal,LocationGlobalRelative
 from pymavlink import mavutil
-#############################
+#####################################
+#####################################
 
 #1.0#DRONE#INITIAL#PARAMETERES#######
 manualArm=False ##If True, arming from RC controller, If False, arming from this script.
@@ -68,14 +74,11 @@ vehicle.parameters['LAND_SPEED']=30
 
 #1.2##YAW#FOLLOWING#PARAMETERS################
 posX = 300
-posY = 150
 speedX = 1
-speedY = 2
 ThresholdX = 20
-ThresholdY = 10
 
-
-#2.#FUNCTIONS#######################
+#2#FUNCTIONS###########################################
+#######################################################
 
 #2.1#ARM#AND#TAKEOFF#######################
 def arm_and_takeoff(targetHeight):
@@ -183,7 +186,7 @@ def OAKDetection():
     det_classes = ["Follow", "Follow", "Follow", "Land", "Follow",
                     "Null", "TakeOff", "TakeOff","blank", "blank", "blank", "blank",
                     "blank", "blank", "blank" ]
-    
+    KF = KalmanFilter(0.1, 1, 1, 1, 0.1,0.1)
     ####TAKEOFF#&#LAND#Parameters######
     TO_Count = 0
     LD_Count = 0
@@ -195,6 +198,7 @@ def OAKDetection():
     ####YAW#Parameters######
     posX = 300
     speedX = 1
+    YawX = 0
     ThresholdX = 75
     Red_FLAG = 0
     #########################
@@ -235,7 +239,8 @@ def OAKDetection():
 
                 img_h = frame.shape[0]
                 img_w = frame.shape[1]
-
+                
+                centers=[]
                 for detection in detections:
                     
                         left, top = int(detection.x_min * img_w), int(detection.y_min * img_h)
@@ -249,9 +254,19 @@ def OAKDetection():
                         ##### Finding BBOX center ####
                         cx = int(left + (right-left)/2)
                         cy = int(top + (bottom-top)/2)
-                        # Draw Line
-                        ImageCenterX, ImageCenterY = int(img_w/2), int(img_h/2) #Center coordinates
-                        line_thickness = 2
+                        
+                        centers.append(np.array([[cx], [cy]]))
+                        (x, y) = KF.predict()
+                        cv2.rectangle(frame, (cx - 15, cy - 15), (cx + 15, cy + 15), (0, 255, 0), 2)
+                        cv2.rectangle(frame, (x - 15, y - 15), (x + 15, y + 15), (255, 0, 0), 2)
+                        
+                        (x1, y1) = KF.update(centers[0])
+
+                        # Draw a rectangle as the estimated object position
+                        cv2.rectangle(frame, (x1 - 15, y1 - 15), (x1 + 15, y1 + 15), (0, 0, 255), 2)
+                        cv2.putText(frame, "Estimated Position", (x1 + 15, y1 + 10), 0, 0.5, (0, 0, 255), 2)
+                        cv2.putText(frame, "Predicted Position", (x + 15, y), 0, 0.5, (255, 0, 0), 2)
+                        cv2.putText(frame, "Measured Position", (centers[0][0] + 15, centers[0][1] - 15), 0, 0.5, (0,255,0), 2)
                         
                         if (Red_FLAG == 0):
                             cv2.line(frame, (ImageCenterX,ImageCenterY ), (cx, cy), (0, 255, 0), thickness=line_thickness)
@@ -299,19 +314,20 @@ def OAKDetection():
                                 ###Horizontal#YAW#Shift#######
                                 if cx>ImageCenterX +ThresholdX: # RIGHT
                                     print("Right")
+                                    YawX = abs(cx-ImageCenterX)*0.24
+                                    print(YawX)
+                                    threading.Thread(target=condition_yaw(YawX,1)).start()
                                     
                                 elif cx<ImageCenterX-ThresholdX: # LEFT
                                     print("Left")
-                                                                 
-#                                     
-                                                       
-                        
-                        
-                        
+                                    YawX = abs(cx-ImageCenterX)*0.24
+                                    YawX = 360 - YawX
+                                    print(YawX)
+                                    threading.Thread(target=condition_yaw(YawX,1)).start()
+                        ##########################################                                                                 
 
                 cv2.imshow('previewout', frame)
-        
-            
+                    
         if cv2.waitKey(1) == ord('q'):
             break
 
@@ -319,13 +335,9 @@ def OAKDetection():
     del device
 
 
-
-
+###MAIN#######################################
 if __name__=='__main__':
     try:
-        
-        
-        #
         OAKDetection()
         time.sleep(1)
         print("LIFT OFF")
