@@ -13,6 +13,7 @@ import sys
 import json
 import socketserver
 import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from io import BytesIO
 from pathlib import Path
 from socketserver import ThreadingMixIn
@@ -24,13 +25,83 @@ import numpy as np
 from PIL import Image
 import time
 
+from collections import deque
 from Detector import detect
 from KalmanFilter import KalmanFilter
-
+import argparse
 #0.2###DRONE#KIT##
 from dronekit import connect, VehicleMode,LocationGlobal,LocationGlobalRelative
 from pymavlink import mavutil
+
+
+HTTP_SERVER_PORT = 8090
 #####################################
+import time
+
+class TCPServerRequest(socketserver.BaseRequestHandler):
+    def handle(self):
+        # Handle is called each time a client is connected
+        # When OpenDataCam connects, do not return - instead keep the connection open and keep streaming data
+        # First send HTTP header
+        header = 'HTTP/1.0 200 OK\r\nServer: Mozarella/2.2\r\nAccept-Range: bytes\r\nConnection: close\r\nMax-Age: 0\r\nExpires: 0\r\nCache-Control: no-cache, private\r\nPragma: no-cache\r\nContent-Type: application/json\r\n\r\n'
+        self.request.send(header.encode())
+        while True:
+            sleep(0.1)
+            if hasattr(self.server, 'datatosend'):
+                self.request.send(self.server.datatosend.encode() + "\r\n".encode())
+
+
+# HTTPServer MJPEG
+class VideoStreamHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'multipart/x-mixed-replace; boundary=--jpgboundary')
+        self.end_headers()
+        while True:
+            sleep(0.1)
+            if hasattr(self.server, 'frametosend'):
+                image = Image.fromarray(cv2.cvtColor(self.server.frametosend, cv2.COLOR_BGR2RGB))
+                stream_file = BytesIO()
+                image.save(stream_file, 'JPEG')
+                self.wfile.write("--jpgboundary".encode())
+
+                self.send_header('Content-type', 'image/jpeg')
+                self.send_header('Content-length', str(stream_file.getbuffer().nbytes))
+                self.end_headers()
+                image.save(self.wfile, 'JPEG')
+
+
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """Handle requests in a separate thread."""
+    pass
+
+
+# start TCP data server
+server_TCP = socketserver.TCPServer(('192.168.57.57', 8070), TCPServerRequest)
+#server_TCP = socketserver.TCPServer(('192.168.0.117', 8070), TCPServerRequest)
+th = threading.Thread(target=server_TCP.serve_forever)
+th.daemon = True
+th.start()
+
+
+# start MJPEG HTTP Server
+server_HTTP = ThreadedHTTPServer(('192.168.57.57', HTTP_SERVER_PORT), VideoStreamHandler)
+#server_HTTP = ThreadedHTTPServer(('192.168.0.117', HTTP_SERVER_PORT), VideoStreamHandler)
+th2 = threading.Thread(target=server_HTTP.serve_forever)
+th2.daemon = True
+th2.start()
+############################
+
+ap = argparse.ArgumentParser()
+ap.add_argument("-v", "--video",
+    help="path to the (optional) video file")
+ap.add_argument("-b", "--buffer", type=int, default=32,
+    help="max buffer size")
+args = vars(ap.parse_args())
+
+pts = deque(maxlen=args["buffer"])
+KF = KalmanFilter(0.1, 1, 1, 1, 0.1,0.1)
 #####################################
 
 #1.0#DRONE#INITIAL#PARAMETERES#######
@@ -73,9 +144,9 @@ vehicle.parameters['PLND_EST_TYPE']=0
 vehicle.parameters['LAND_SPEED']=30
 
 #1.2##YAW#FOLLOWING#PARAMETERS################
-posX = 300
-speedX = 1
-ThresholdX = 20
+
+
+
 
 #2#FUNCTIONS###########################################
 #######################################################
@@ -186,7 +257,7 @@ def OAKDetection():
     det_classes = ["Follow", "Follow", "Follow", "Land", "Follow",
                     "Null", "TakeOff", "TakeOff","blank", "blank", "blank", "blank",
                     "blank", "blank", "blank" ]
-    KF = KalmanFilter(0.1, 1, 1, 1, 0.1,0.1)
+
     ####TAKEOFF#&#LAND#Parameters######
     TO_Count = 0
     LD_Count = 0
@@ -202,7 +273,8 @@ def OAKDetection():
     ThresholdX = 75
     Red_FLAG = 0
     #########################
-
+    out = cv2.VideoWriter('DronePy.avi',cv2.VideoWriter_fourcc('M','J','P','G'),10,(300,300))
+    #########################
     device = depthai.Device('', False)
     #nn2depth = device.get_nn_to_depth_bbox_mapping()
 
@@ -213,11 +285,12 @@ def OAKDetection():
             "blob_file_config": str(Path('./mobilenet-ssd/config.json').resolve().absolute())
         }
     })
-
+    #print("HERE")
     if pipeline is None:
         raise RuntimeError("Error initializing pipelne")
 
     detections = []
+    
     print(det_classes)
     #arm_and_takeoff(targetAltitude)
 
@@ -239,93 +312,116 @@ def OAKDetection():
 
                 img_h = frame.shape[0]
                 img_w = frame.shape[1]
-                
-                centers=[]
+                #print("HERE2")
+                centers=[]            
                 for detection in detections:
                     
-                        left, top = int(detection.x_min * img_w), int(detection.y_min * img_h)
-                        right, bottom = int(detection.x_max * img_w), int(detection.y_max * img_h)
-                        #print(detection.label)
-                        label = "{}".format(det_classes[detection.label])
-                        print(label)
-                        cv2.putText(frame, label, (left, top - 11), cv2.FONT_HERSHEY_TRIPLEX, 0.5, (0, 0, 255))
-                        cv2.rectangle(frame, (left, top), (right, bottom), (0, 255,0), 5)
-                        
-                        ##### Finding BBOX center ####
-                        cx = int(left + (right-left)/2)
-                        cy = int(top + (bottom-top)/2)
-                        
-                        centers.append(np.array([[cx], [cy]]))
-                        (x, y) = KF.predict()
-                        cv2.rectangle(frame, (cx - 15, cy - 15), (cx + 15, cy + 15), (0, 255, 0), 2)
-                        cv2.rectangle(frame, (x - 15, y - 15), (x + 15, y + 15), (255, 0, 0), 2)
-                        
-                        (x1, y1) = KF.update(centers[0])
+                    left, top = int(detection.x_min * img_w), int(detection.y_min * img_h)
+                    right, bottom = int(detection.x_max * img_w), int(detection.y_max * img_h)
+                    #print(detection.label)
+                    label = "{}".format(det_classes[detection.label])
+                    print(label)
+                    cv2.putText(frame, label, (left, top - 11), cv2.FONT_HERSHEY_TRIPLEX, 0.5, (0, 0, 255))
+                    cv2.rectangle(frame, (left, top), (right, bottom), (0, 255,0), 5)
+                    
+                    ##### Finding BBOX center ####
+                    cx = int(left + (right-left)/2)
+                    cy = int(top + (bottom-top)/2)
+                     
+                    centers.append(np.array([[cx], [cy]]))
+                    (x, y) = KF.predict()
+                    cv2.rectangle(frame, (cx - 15, cy - 15), (cx + 15, cy + 15), (0, 255, 0), 2)
+                    cv2.rectangle(frame, (x - 15, y - 15), (x + 15, y + 15), (255, 0, 0), 2)
+#                     
+                    (x1, y1) = KF.update(centers[0])
 
-                        # Draw a rectangle as the estimated object position
-                        cv2.rectangle(frame, (x1 - 15, y1 - 15), (x1 + 15, y1 + 15), (0, 0, 255), 2)
-                        cv2.putText(frame, "Estimated Position", (x1 + 15, y1 + 10), 0, 0.5, (0, 0, 255), 2)
-                        cv2.putText(frame, "Predicted Position", (x + 15, y), 0, 0.5, (255, 0, 0), 2)
-                        cv2.putText(frame, "Measured Position", (centers[0][0] + 15, centers[0][1] - 15), 0, 0.5, (0,255,0), 2)
-                        
-                        if (Red_FLAG == 0):
-                            cv2.line(frame, (ImageCenterX,ImageCenterY ), (cx, cy), (0, 255, 0), thickness=line_thickness)
-                        elif (Red_FLAG == 1):   
-                            cv2.line(frame, (ImageCenterX,ImageCenterY ), (cx, cy), (0, 0, 255), thickness=line_thickness) 
-                        
-                        
+                    # Draw a rectangle as the estimated object position
+                    cv2.rectangle(frame, (x1 - 15, y1 - 15), (x1 + 15, y1 + 15), (0, 0, 255), 2)
+                    cv2.putText(frame, "Estimated Position", (x1 + 15, y1 + 10), 0, 0.5, (0, 0, 255), 2)
+                    cv2.putText(frame, "Predicted Position", (x + 15, y), 0, 0.5, (255, 0, 0), 2)
+                    cv2.putText(frame, "Measured Position", (centers[0][0] + 15, centers[0][1] - 15), 0, 0.5, (0,255,0), 2)
+                    
+                    ImageCenterX, ImageCenterY = int(img_w/2), int(img_h/2) #Center coordinates
+                       
+                    line_thickness = 2
+                    
+                    if (Red_FLAG == 0):
+                        cv2.line(frame, (ImageCenterX,ImageCenterY ), (x1, y1), (0, 255, 0), thickness=line_thickness)
+                    elif (Red_FLAG == 1):   
+                        cv2.line(frame, (ImageCenterX,ImageCenterY ), (x1, y1), (0, 0, 255), thickness=line_thickness)    
+                    
+                       
+#                     #######Update the points queue#########
+                    center = (int(x1), int(y1))
+                    pts.appendleft(center)
+                       
+                       
+                    for i in range(1, len(pts)):
+                    # if either of the tracked points are None, ignore them
+                        if pts[i - 1] is None or pts[i] is None:
+                            continue
 
-                        
-                        ###TakeOff#Sequence#########
-                        #if (vehicle.location.global_relative_frame.alt <= 0):
-                        print (vehicle.location.global_relative_frame.alt, "Altitude")
-                        if (vehicle.location.global_relative_frame.alt <= 0.4):
-                            if (label == "TakeOff"):
-                                #print("ENTERED TAKEOFF ZONE")
-                                TO_Count += 1
-                                if (TO_Count >=Threshold_Trigger ):
-                                    TO_Count = 0
-                                    print (1, "ENTERED TAKEOFF ZONE")
-                                    #arm_and_takeoff(targetAltitude)
-                                    Flag = 1                
-                        
-                        ## Landing Sequence
-                        elif (vehicle.location.global_relative_frame.alt >= 0.5):
-                            #print (Altitude, "AltitudeENTERLANDING")
-                            if (label == "Land"):
-                                LD_Count += 1
-                                if (LD_Count >=(Threshold_Trigger-10) ):
-                                    LD_Count = 0
-                                    print ("LANDING AT THE LZ")
-                                    Flag = 1
-                                    
-                                            
+                    # otherwise, compute the thickness of the line and
+                    # draw the connecting lines
+                        thickness = int(np.sqrt(args["buffer"] / float(i + 1)) * 2.5)
+                        cv2.line(frame, pts[i - 1], pts[i], (0, 0, 255), thickness)
+#                     ##########################################
+#                         
+#                       
+                    ###TakeOff#Sequence#########
+                    #if (vehicle.location.global_relative_frame.alt <= 0):
+                    print (vehicle.location.global_relative_frame.alt, "Altitude")
+                    if (vehicle.location.global_relative_frame.alt <= 0.4):
+                        if (label == "TakeOff"):
+                            #print("ENTERED TAKEOFF ZONE")
+                            TO_Count += 1
+                            if (TO_Count >=Threshold_Trigger ):
+                                TO_Count = 0
+                                print (1, "ENTERED TAKEOFF ZONE")
+                                #arm_and_takeoff(targetAltitude)
+                                Flag = 1                
+                    
+                    ## Landing Sequence
+                    elif (vehicle.location.global_relative_frame.alt >= 0.5):
+                        #print (Altitude, "AltitudeENTERLANDING")
+                        if (label == "Land"):
+                            LD_Count += 1
+                            if (LD_Count >=(Threshold_Trigger-10) ):
+                                LD_Count = 0
+                                print ("LANDING AT THE LZ")
+                                Flag = 1
+                                
+                                        
                            ############YAW#Rotation#Follow####################
 
-                            elif (label == "Follow"):
-                                print("FOLLOW Sequence entered")
+                        elif (label == "Follow"):
+                            print("FOLLOW Sequence entered")
+                            #print("x1", x1)
+                            ###Threshold#Indication#######
+                            if abs(x1-ImageCenterX)>ThresholdX: 
+                                Red_FLAG = 1
+                            else:
+                                Red_FLAG = 0
                                 
-                                ###Threshold#Indication#######
-                                if abs(cx-ImageCenterX)>ThresholdX: 
-                                    Red_FLAG = 1
-                                else:
-                                    Red_FLAG = 0
-                                    
-                                ###Horizontal#YAW#Shift#######
-                                if cx>ImageCenterX +ThresholdX: # RIGHT
-                                    print("Right")
-                                    YawX = abs(cx-ImageCenterX)*0.24
-                                    print(YawX)
-                                    threading.Thread(target=condition_yaw(YawX,1)).start()
-                                    
-                                elif cx<ImageCenterX-ThresholdX: # LEFT
-                                    print("Left")
-                                    YawX = abs(cx-ImageCenterX)*0.24
-                                    YawX = 360 - YawX
-                                    print(YawX)
-                                    threading.Thread(target=condition_yaw(YawX,1)).start()
-                        ##########################################                                                                 
-
+                            x1 = x1.item()
+                            print("x1", x1)
+                            ###Horizontal#YAW#Shift#######
+                            if x1+ImageCenterX > ImageCenterX + ThresholdX: # RIGHT
+                                print("Right")
+                                YawX = abs(x1-ImageCenterX)*0.2
+                                print("YAW:", YawX)
+                                threading.Thread(target=condition_yaw(45,1)).start()
+                                
+                            elif ImageCenterX - x1 < ImageCenterX - ThresholdX: # LEFT
+                                print("Left")
+                                YawX = abs(x1-ImageCenterX)*0.2
+                                YawX = 360 - YawX
+                                ("YAW:", YawX)
+                                threading.Thread(target=condition_yaw(315,1)).start()
+                    ##########################################                                                                 
+                server_TCP.datatosend = json.dumps([detection.get_dict() for detection in detections])
+                server_HTTP.frametosend = frame
+                #out.write(frame)
                 cv2.imshow('previewout', frame)
                     
         if cv2.waitKey(1) == ord('q'):
@@ -333,6 +429,7 @@ def OAKDetection():
 
     del pipeline
     del device
+    out.release()
 
 
 ###MAIN#######################################
